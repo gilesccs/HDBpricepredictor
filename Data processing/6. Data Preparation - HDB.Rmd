@@ -1,0 +1,347 @@
+---
+title: "Data Preparation - HDB"
+author: "Daniel Ang"
+date: "2/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Loading packages
+```{r message=FALSE, warning=FALSE}
+packages = c('sf', 'dplyr', 'tidyverse', 'readr', 'httr', 'kableExtra', 'tmap', 'rgeos', 'rgdal', 'plotKML')
+for(p in packages){
+  if(!require(p, character.only =T)){
+    install.packages(p)
+  }
+  library(p,character.only =T)
+}
+memory.size(max = FALSE)
+memory.limit(size = NA)
+
+print_table = function(x){
+  n = nrow(x)
+  if (n > 6){n = 6}
+  x[1:n,] %>%
+    kable(format = "html", escape = F) %>%
+    kable_styling(bootstrap_options = c("striped", "bordered", "responsive"))
+}
+```
+
+# Importing data
+
+Importing resale HDB pricing
+```{r}
+resalePrices = read_csv(file="Raw/HDB resale/resale-flat-prices-based-on-registration-date-from-jan-2017-onwards.csv",
+                        col_types = cols(
+                          month = col_date(format = "%Y-%m"),
+                          town = col_factor(),
+                          flat_type = col_factor(),
+                          block = col_character(),
+                          street_name = col_character(),
+                          storey_range = col_factor(),
+                          floor_area_sqm = col_double(),
+                          flat_model = col_factor(),
+                          lease_commence_date = col_date(format = "%Y"),
+                          remaining_lease = col_character(),
+                          resale_price = col_double()
+                        ))
+
+```
+
+Feature creation to get `price_per_sqm`, `age_month`, `remaining_lease_month`
+
+```{r}
+# Transforming "x year x month" in lease_commence_date into just "x month"
+getMonths = function(remaining_lease){
+  year_month = regmatches(remaining_lease, gregexpr('\\(?[0-9,.]+', remaining_lease))
+  year = as.numeric(year_month[[1]][1])
+  month = as.numeric(year_month[[1]][2])
+  if(is.na(year)){year = 0}
+  if(is.na(month)){month = 0}
+  return(year*12 + month)
+}
+
+# Get months difference between 2 different date value
+elapsed_months = function(end_date, start_date) {
+  ed <- as.POSIXlt(end_date)
+  sd <- as.POSIXlt(start_date)
+  12 * (ed$year - sd$year) + (ed$mon - sd$mon)
+}
+
+
+resalePrices = resalePrices %>% 
+  rowwise() %>% 
+  mutate("transaction_year" = format(`month`,"%Y")) %>%
+  mutate("price_per_sqm" = round(resale_price/floor_area_sqm, digits=2)) %>%
+  mutate("age_month" = elapsed_months(`month`, `lease_commence_date`)) %>%
+  mutate("remaining_lease_month" = getMonths(`remaining_lease`)) %>%
+  select(-c("lease_commence_date", "remaining_lease", "month"))
+
+print_table(resalePrices)
+```
+
+# Geolocation search
+## Creating list of unique address to perform geolocation search
+
+Creating a list of unique search address for geo-location search
+```{r}
+uniqueAddress = select(resalePrices, `street_name`, `block`) %>%
+  unique()
+```
+
+Searching unique address up on oneMap API
+```{r}
+# HTTP get query to OneMap API 
+search_address_info = function(street_name, block) {
+  search_query = paste(`street_name`, `block`, sep=" ")
+  search_query = gsub(" ", "%20", search_query)
+  
+  r = RETRY("GET", paste("https://developers.onemap.sg/commonapi/search?searchVal=",search_query,"&returnGeom=Y&getAddrDetails=Y", sep = ""))
+  response_text = content(r, "parsed")
+  if(response_text$found != 0){
+    return(response_text$results[1])
+  }else{
+    return(NA)
+  }
+}
+
+uniqueAddress = uniqueAddress %>% 
+  rowwise() %>% 
+  mutate("result" = search_address_info(`street_name`, `block`))
+```
+
+
+Unloading results from OneMap API
+```{r}
+uniqueAddress = uniqueAddress %>% 
+  mutate("postal" = result[6][[1]]) %>% 
+  mutate("address" = result[5][[1]]) %>% 
+  mutate("latitude" = result[9][[1]]) %>% 
+  mutate("longtitude" = result[10][[1]]) %>%
+  select(-"result")
+```
+
+At this point, we now have postal code, lat, long for each of our HDB address
+```{r}
+print_table(uniqueAddress)
+head(uniqueAddress)
+```
+
+# Count of facilities for each postal code
+
+## Importing masterplan subzone data
+
+```{R}
+mpsz = st_read(dsn = "raw/MP14_SUBZONE", layer = "MP14_SUBZONE_WEB_PL")
+mpsz_svy21 = st_transform(mpsz, 3414)
+```
+
+## Creating a sf object from the aspatial data frame
+```{r}
+# getting rid of any failed variables
+uniqueAddress = uniqueAddress %>% 
+  filter(!is.na(latitude))
+
+# Creating a sf object from the aspatial data frame
+uniqueAddress.sf = sf::st_as_sf(uniqueAddress, coords = c("longtitude", "latitude"), crs=4326) %>% 
+  st_transform(crs=3414)
+```
+
+Setting distance buffer
+```{r}
+# distance in meters
+buffersize = 1500
+```
+
+## Shopping mall
+```{R} 
+countWithinBuffer.shp = function(geometry, locationList.shp, buffersize){
+  pointsBuffer = gBuffer(as(geometry, "Spatial"), width = buffersize)
+  proj4string(locationList.shp) = CRS("+init=epsg:3414")
+  proj4string(pointsBuffer) = CRS("+init=epsg:3414")
+  
+  count = sp::over(locationList.shp, pointsBuffer)
+  c = as.data.frame(count) %>% filter(!is.na(count))
+  return(nrow(c))
+}
+
+# loading shopping mall data
+list_of_shopping_malls = read.csv(file="Processed/Shopping malls/list_of_shopping_malls.csv", header=TRUE, sep=",")
+list_of_shopping_malls = list_of_shopping_malls %>% 
+  filter(!is.na(latitude))
+
+list_of_shopping_malls.sf = st_as_sf(list_of_shopping_malls, coords = c("longtitude", "latitude"), crs=4326) %>% 
+  st_transform(crs=3414)
+
+# Visualizing bus interchange locations
+plot(st_geometry(mpsz), main="Shopping mall")
+plot(st_geometry(list_of_shopping_malls.sf), col = "red", lwd = 3, add = TRUE)
+
+# Counting qty of malls within buffer
+list_of_shopping_malls.shp = as(list_of_shopping_malls.sf, 'Spatial')
+uniqueAddress.sf = uniqueAddress.sf %>%
+  rowwise() %>%
+  mutate("mallCount" = countWithinBuffer.shp(`geometry`, list_of_shopping_malls.shp, buffersize))
+
+head(uniqueAddress.sf)
+```
+## Bus Interchange
+```{r}
+# loading bus interchange data
+list_of_bus_interchange = read.csv(file="Processed/Bus interchange/list_of_bus_interchange.csv", header=TRUE, sep=",")
+list_of_bus_interchange = list_of_bus_interchange %>% 
+  filter(!is.na(latitude))
+
+list_of_bus_interchange.sf = st_as_sf(list_of_bus_interchange, coords = c("longtitude", "latitude"), crs=4326) %>% 
+  st_transform(crs=3414)
+
+# Visualizing bus interchange locations
+plot(st_geometry(mpsz), main="Bus Interchange")
+plot(st_geometry(list_of_bus_interchange.sf), col = "red", lwd = 3, add = TRUE)
+
+
+# Counting qty of malls within buffer
+list_of_bus_interchange.shp = as(list_of_bus_interchange.sf, 'Spatial')
+uniqueAddress.sf = uniqueAddress.sf %>%   
+  rowwise() %>%
+  mutate("busInterchangeCount" = countWithinBuffer.shp(`geometry`, list_of_bus_interchange.shp, buffersize))
+
+head(uniqueAddress.sf)
+```
+
+
+## SportSG Sport Facilities
+```{R}
+countWithinBuffer.kml = function(geometry, locationList.kml, buffersize){
+  pointsBuffer = gBuffer(as(geometry, "Spatial"), width=buffersize)
+  st_crs(locationList.kml) = st_crs(pointsBuffer)
+  
+  count = sp::over(as(locationList.kml, "Spatial"), pointsBuffer)
+  c = as.data.frame(count) %>% filter(!is.na(count))
+  return(nrow(c))
+}
+
+
+sportsg_sport_facilities = st_read("raw/SportSG Sport Facilities/sportsg-sport-facilities-kml.kml") %>% st_transform(crs=3414)
+sportsg_sport_facilities = st_zm(sportsg_sport_facilities, drop = TRUE, what = "ZM")
+
+# Visualizing SportSG Sport Facilities locations
+plot(st_geometry(mpsz), main="SportSG Sport Facilities")
+plot(st_geometry(sportsg_sport_facilities), col = "red", lwd = 3, add = TRUE)
+
+uniqueAddress.sf = uniqueAddress.sf %>%
+  rowwise() %>%
+  mutate("sportsCount" = countWithinBuffer.kml(`geometry`, sportsg_sport_facilities, buffersize))
+
+head(uniqueAddress.sf)
+```
+
+
+## Hawker
+```{R}
+hawker_facilities = st_read("raw/Hawker centres/hawker-centres-kml.kml") %>% st_transform(crs=3414)
+hawker_facilities = st_zm(sportsg_sport_facilities, drop = TRUE, what = "ZM")
+
+# Visualizing Hawker Facilities locations
+plot(st_geometry(mpsz), main="Hawker Facilities")
+plot(st_geometry(hawker_facilities), col = "red", lwd = 3, add = TRUE)
+
+uniqueAddress.sf = uniqueAddress.sf %>%
+  rowwise() %>%
+  mutate("hawkerCount" = countWithinBuffer.kml(`geometry`, hawker_facilities, buffersize))
+
+head(uniqueAddress.sf)
+```
+
+## NParks Parks
+```{R}
+nparklocation = st_read("raw/NParks Parks/nparks-parks-kml.kml") %>% st_transform(crs=3414)
+nparklocation_pt = st_centroid(nparklocation)$geometry
+
+# Visualizing Hawker Facilities locations
+plot(st_geometry(mpsz), main="NParks Parks")
+plot(st_geometry(nparklocation_pt), col = "red", lwd = 3, add = TRUE)
+
+uniqueAddress.sf = uniqueAddress.sf %>%
+  rowwise() %>%
+  mutate("npParkCount" = countWithinBuffer.kml(`geometry`, nparklocation_pt, 500))
+
+head(uniqueAddress.sf)
+```
+
+## Pre-school locations
+```{r}
+preschoolslocation = st_read("raw/List of Preschools/pre-schools-location-kml.kml") %>% st_transform(crs=3414)
+
+# Visualizing Pre-school locations
+plot(st_geometry(mpsz), main="Pre-school locations")
+plot(st_geometry(preschoolslocation), col = "red", lwd = 3, add = TRUE)
+
+uniqueAddress.sf = uniqueAddress.sf %>%
+  rowwise() %>%
+  mutate("preschoolCount" = countWithinBuffer.kml(`geometry`, preschoolslocation, buffersize))
+
+head(uniqueAddress.sf)
+```
+
+## School location
+```{r}
+# loading school location data
+list_of_school = read.csv(file="Processed/School Directory and Information/general-information-of-schools.csv", header=TRUE, sep=",")
+list_of_school = list_of_school %>% 
+  filter(!is.na(latitude))
+
+list_of_school.sf = st_as_sf(list_of_school, coords = c("longtitude", "latitude"), crs=4326) %>% 
+  st_transform(crs=3414)
+
+# Visualizing bus interchange locations
+plot(st_geometry(mpsz), main="School location")
+plot(st_geometry(list_of_school.sf), col = "red", lwd = 3, add = TRUE)
+
+list_of_school.sf.primary = list_of_school.sf %>% filter(mainlevel_code == "PRIMARY")
+list_of_school.sf.secondary = list_of_school.sf %>% filter(mainlevel_code == "SECONDARY")
+list_of_school.sf.tertiary = list_of_school.sf %>% filter(!mainlevel_code %in% c('PRIMARY','SECONDARY'))
+
+# Counting qty of malls within buffer
+list_of_bus_interchange.shp.primary = as(list_of_school.sf.primary, 'Spatial')
+list_of_bus_interchange.shp.secondary = as(list_of_school.sf.secondary, 'Spatial')
+list_of_bus_interchange.shp.tertiary = as(list_of_school.sf.tertiary, 'Spatial')
+
+
+uniqueAddress.sf = uniqueAddress.sf %>%   
+  rowwise() %>%
+  mutate("primarySchCount" = countWithinBuffer.shp(`geometry`, list_of_bus_interchange.shp.primary, buffersize)) %>%
+  mutate("secondarySchCount" = countWithinBuffer.shp(`geometry`, list_of_bus_interchange.shp.secondary, buffersize)) %>%
+  mutate("tertiarySchCount" = countWithinBuffer.shp(`geometry`, list_of_bus_interchange.shp.tertiary, buffersize))
+
+head(uniqueAddress.sf)
+```
+
+# Joining data
+```{r}
+street_to_MRT = read_csv(file="Raw/Distance to MRT/street_to_MRT.csv")
+street_to_MRT = street_to_MRT %>% 
+  select(-"X1") %>%
+  filter(`street_name` %in% uniqueAddress.sf$street_name) %>%
+  distinct(`street_name`, .keep_all = TRUE)
+
+# Merging resalePrices & additional postal code info
+resalePrices_merged = merge(resalePrices, uniqueAddress.sf, by=c("block","street_name"))
+
+# Merging resalePrices & distance to mrt
+resalePrices_merged = merge(resalePrices_merged, street_to_MRT, by=c("street_name"))
+
+
+
+# Merging resalePrices & median rental by type
+medianRental = read_csv(file="Processed/Median Rent by Town and Flat Type/median-rent-by-town-and-flat-type.csv")
+medianRental = medianRental %>% rename("transaction_year" = "year")
+resalePrices_merged = left_join(resalePrices_merged, medianRental, by=c("transaction_year", "town", "flat_type"))
+
+# Export the final file
+write_csv(x = resalePrices_merged, path = "Processed/resalePrices_merged.csv")
+```

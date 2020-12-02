@@ -1,0 +1,13 @@
+# README
+
+Files in folder:
+MLR-Final.ipynb: code for multi-linear regression model (change buffer 750/1500 within codes accordingly)
+Neural_Network.ipynb: code for neural network model (change buffer 750/1500 within codes accordingly)
+Random Forest 750.ipynb: code for random forest model with buffer 750
+Random Forest 1500.ipynb: code for random forest model with buffer 1500
+Start Jupyter Notebook.bat: file to start jupyter notebook from windows command line
+SVR_750.ipynb: code for SVR model with buffer 750
+SVR_1500.ipynb: code for SVR model with buffer 1500
+xgmodel.ipynb: code for XGBoost model (change buffer 750/1500 within codes accordingly)
+y2015_to_2017_buffer_750.csv: data from 2015 to 2017 with facilities range within 750m buffer
+y2015_to_2017_buffer_1500.csv: data from 2015 to 2017 with facilities range within 1500m buffer

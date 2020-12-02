@@ -1,0 +1,84 @@
+---
+title: "Data Preparation - Pre-School"
+author: "Daniel Ang"
+date: "2/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Loading packages
+```{r message=FALSE, warning=FALSE}
+packages = c('sf', 'dplyr', 'tidyverse', 'readr', 'httr', 'kableExtra')
+for(p in packages){
+  if(!require(p, character.only =T)){
+    install.packages(p)
+  }
+  library(p,character.only =T)
+}
+
+print_table = function(x){
+  n = nrow(x)
+  if (n > 6){n = 6}
+  x[1:n,] %>%
+    kable(format = "html", escape = F) %>%
+    kable_styling(bootstrap_options = c("striped", "bordered", "responsive"))
+}
+```
+
+# Importing data
+
+Importing Pre-schools location data
+```{r}
+preschools = read_csv(file="Raw/List of Preschools/listing-of-centre.csv")
+
+head(preschools)
+```
+
+
+Searching unique address up on oneMap API
+```{r}
+# HTTP get query to OneMap API 
+search_address_info = function(postal_code) {
+  r = RETRY("GET", paste("https://developers.onemap.sg/commonapi/search?searchVal=",postal_code,"&returnGeom=Y&getAddrDetails=Y", sep = ""))
+  response_text = content(r, "parsed")
+  if(response_text$found != 0){
+    return(response_text$results[1])
+  }else{
+    return(NA)
+  }
+}
+
+preschool.location = preschools %>% 
+  select(c("centre_name", "centre_code", "centre_address", "postal_code")) %>% 
+  drop_na("postal_code") %>%
+  rowwise() %>%
+  mutate("result" = search_address_info(`postal_code`))
+```
+
+
+Unloading results from OneMap API
+```{r}
+preschool.location = preschool.location %>% 
+  filter(postal_code != "na") %>%
+  mutate("postal" = result[6][[1]]) %>% 
+  mutate("address" = result[5][[1]]) %>% 
+  mutate("latitude" = result[9][[1]]) %>% 
+  mutate("longtitude" = result[10][[1]]) %>%
+  select(-"result")
+
+head(preschool.location)
+```
+
+At this point, we now have postal code, lat, long for each of the preschool location
+```{r}
+print_table(preschool.location)
+```
+
+Outputting processed csv file
+```{r}
+write_csv(x = preschool.location, path = "Processed/List of Preschools/listing-of-centre.csv")
+```

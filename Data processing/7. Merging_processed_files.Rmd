@@ -1,0 +1,92 @@
+---
+title: "Data Preparation - merging"
+author: "Daniel Ang"
+date: "2/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Loading packages
+```{r message=FALSE, warning=FALSE}
+packages = c('dplyr', 'tidyverse', 'readr')
+for(p in packages){
+  if(!require(p, character.only =T)){
+    install.packages(p)
+  }
+  library(p,character.only =T)
+}
+```
+
+
+
+Importing resale HDB pricing
+```{r}
+resalePrices_2017 = read_csv(file="Raw/HDB resale/resale-flat-prices-based-on-registration-date-from-jan-2017-onwards.csv")
+resalePrices_2015 = read_csv(file="Raw/HDB resale/resale-flat-prices-based-on-registration-date-from-jan-2015-to-dec-2016.csv")
+
+hdb_resale_all = rbind(resalePrices_2015, resalePrices_2017)
+resalePrices_2017 = NA
+resalePrices_2015 = NA
+```
+
+
+###Importing processed data
+
+Buffer = 1500
+```{r}
+y2015_buffer_1500  = read_csv(file="merged/2015_buffer_1500.csv") %>%
+  select(-"median_rent")
+y2017_buffer_1500  = read_csv(file="merged/2017_buffer_1500.csv")
+
+buffer_1500 = rbind(y2015_buffer_1500, y2017_buffer_1500)
+y2015_buffer_1500 = NA
+y2017_buffer_1500 = NA
+
+buffer_1500 = buffer_1500 %>% select(-"transaction_year")
+
+# Removing duplicate
+hdb_resale_all_no_dup = hdb_resale_all %>% unique()
+buffer_1500_no_dup = buffer_1500 %>% unique()
+buffer_1500_date = left_join(hdb_resale_all_no_dup,
+                   buffer_1500_no_dup)
+
+buffer_1500_date = buffer_1500_date %>% 
+  mutate(`temp` = as.Date(paste(`month`,01,sep="-"))) %>%
+  mutate(`transaction_year` = as.numeric(format(`temp`,'%Y'))) %>%
+  mutate(`transaction_month` = as.numeric(format(`temp`,'%m'))) %>%
+  select(-"temp")
+```
+
+Buffer = 750
+```{r}
+y2017_buffer_750  = read_csv(file="merged/2017_buffer_750.csv") %>%
+  select(-"median_rent")
+y2015_buffer_750  = read_csv(file="merged/2015_buffer_750.csv")
+
+
+buffer_750 = rbind(y2015_buffer_750, y2017_buffer_750)
+y2015_buffer_750 = NA
+y2017_buffer_750 = NA
+
+
+buffer_750_no_dup = buffer_750 %>% unique()
+buffer_750_date = left_join(hdb_resale_all_no_dup,
+                   buffer_750_no_dup)
+
+buffer_750_date = buffer_750_date %>% 
+  mutate(`temp` = as.Date(paste(`month`,01,sep="-"))) %>%
+  mutate(`transaction_year` = as.numeric(format(`temp`,'%Y'))) %>%
+  mutate(`transaction_month` = as.numeric(format(`temp`,'%m'))) %>%
+  select(-"temp")
+```
+
+# Outputting merged data by buffer
+```{r}
+# Export the final file
+write_csv(x = buffer_1500_date, path = "Processed/y2015_to_2017_buffer_1500.csv")
+write_csv(x = buffer_750_date, path = "Processed/y2015_to_2017_buffer_750.csv")
+```

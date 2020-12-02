@@ -1,0 +1,79 @@
+---
+title: "Data Preparation - Malls"
+author: "Daniel Ang"
+date: "2/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Loading packages
+```{r message=FALSE, warning=FALSE}
+packages = c('dplyr', 'readr', 'httr', 'kableExtra')
+for(p in packages){
+  if(!require(p, character.only =T)){
+    install.packages(p)
+  }
+  library(p,character.only =T)
+}
+
+print_table = function(x){
+  n = nrow(x)
+  if (n > 6){n = 6}
+  x[1:n,] %>%
+    kable(format = "html", escape = F) %>%
+    kable_styling(bootstrap_options = c("striped", "bordered", "responsive"))
+}
+```
+
+# Importing data
+
+Importing list of shopping mall names
+```{r}
+list_of_shopping_malls = read_csv(file="Raw/Shopping malls/list_of_shopping_malls.csv")
+
+print_table(list_of_shopping_malls)
+```
+
+# Geolocation search
+
+Searching unique address up on oneMap API
+```{r}
+# HTTP get query to OneMap API 
+search_address_info = function(name) {
+  name = gsub(" ", "%20", name)
+  
+  r = RETRY("GET", paste("https://developers.onemap.sg/commonapi/search?searchVal=",name,"&returnGeom=Y&getAddrDetails=Y", sep = ""))
+  response_text = content(r, "parsed")
+  if(response_text$found != 0){
+    return(response_text$results[1])
+  }else{
+    return(NA)
+  }
+}
+
+uniqueAddress = list_of_shopping_malls %>% 
+  rowwise() %>% 
+  mutate("result" = search_address_info(Name))
+```
+
+
+At this point, we now have postal code, lat, long for each of the shopping malles
+```{r}
+uniqueAddress = uniqueAddress %>% 
+  mutate("postal" = result[6][[1]]) %>% 
+  mutate("address" = result[5][[1]]) %>% 
+  mutate("latitude" = result[9][[1]]) %>% 
+  mutate("longtitude" = result[10][[1]]) %>%
+  select(-"result")
+
+print_table(uniqueAddress)
+```
+
+Outputting processed csv file
+```{r}
+write_csv(x = uniqueAddress, path = "Processed/Shopping malls/list_of_shopping_malls.csv")
+```

@@ -1,0 +1,74 @@
+---
+title: "Data Preparation - Medan rental"
+author: "Daniel Ang"
+date: "2/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Loading packages
+```{r message=FALSE, warning=FALSE}
+packages = c('dplyr', 'readr', 'kableExtra')
+for(p in packages){
+  if(!require(p, character.only =T)){
+    install.packages(p)
+  }
+  library(p,character.only =T)
+}
+
+print_table = function(x){
+  n = nrow(x)
+  if (n > 6){n = 6}
+  x[1:n,] %>%
+    kable(format = "html", escape = F) %>%
+    kable_styling(bootstrap_options = c("striped", "bordered", "responsive"))
+}
+```
+
+# Importing data
+
+Importing schools location data
+```{r}
+medianRental = read_csv(file="Raw/Median Rent by Town and Flat Type/median-rent-by-town-and-flat-type.csv", col_types = cols(
+  quarter = col_character(),
+  town = col_factor(),
+  flat_type = col_factor(),
+  median_rent = col_double()
+))
+
+head(medianRental)
+```
+
+Extracting year from quarter
+```{r}
+medianRental = medianRental %>%
+  mutate("year" = as.numeric(gsub("([0-9]+).*$", "\\1", quarter)))
+```
+
+Calculate yearly average rental cost by district by type
+```{r}
+yearlyMedianRental = medianRental %>%
+  group_by(year, town, flat_type) %>%
+  summarise(mean(median_rent)) %>% 
+  rename(median_rent = "mean(median_rent)") %>%
+  filter(flat_type %in% c("3-RM", "4-RM", "5-RM", "EXEC")) %>%
+  filter(year %in% c("2015", "2016", "2017")) %>%
+  unique()
+```
+
+Recoding variable to match HDB file
+```{r}
+level_key = c("3-RM" = "3 Room", "4-RM" = "4 Room", "5-RM" = "5 Room", "EXEC" = "EXECUTIVE")
+yearlyMedianRental$flat_type = recode(yearlyMedianRental$flat_type, !!!level_key)
+
+print_table(yearlyMedianRental)
+```
+
+Outputting processed csv file
+```{r}
+write_csv(x = yearlyMedianRental, path = "Processed/Median Rent by Town and Flat Type/median-rent-by-town-and-flat-type.csv")
+```
